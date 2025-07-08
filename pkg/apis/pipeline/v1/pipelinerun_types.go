@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ryanuber/go-glob"
 	"github.com/tektoncd/pipeline/pkg/apis/config"
 	"github.com/tektoncd/pipeline/pkg/apis/pipeline"
 	pipelineErrors "github.com/tektoncd/pipeline/pkg/apis/pipeline/errors"
@@ -667,7 +668,7 @@ func (pr *PipelineRun) GetTaskRunSpec(pipelineTaskName string) PipelineTaskRunSp
 		PodTemplate:        pr.Spec.TaskRunTemplate.PodTemplate,
 	}
 	for _, task := range pr.Spec.TaskRunSpecs {
-		if task.PipelineTaskName == pipelineTaskName {
+		if pr.MatchesTaskRunSpec(task.PipelineTaskName, pipelineTaskName) {
 			// merge podTemplates specified in pipelineRun.spec.taskRunSpecs[].podTemplate and pipelineRun.spec.podTemplate
 			// with taskRunSpecs taking higher precedence
 			s.PodTemplate = pod.MergePodTemplateWithDefault(task.PodTemplate, s.PodTemplate)
@@ -681,6 +682,12 @@ func (pr *PipelineRun) GetTaskRunSpec(pipelineTaskName string) PipelineTaskRunSp
 		}
 	}
 	return s
+}
+
+// MatchesTaskRunSpec checks if a taskRunSpec pattern matches the given pipelineTaskName.
+// Supports wildcard patterns with *.
+func (pr *PipelineRun) MatchesTaskRunSpec(pattern, pipelineTaskName string) bool {
+	return glob.Glob(pattern, pipelineTaskName)
 }
 
 // PipelineTaskRunTemplate is used to specify run specifications for all Task in pipelinerun.

@@ -568,17 +568,25 @@ func ValidateWorkspaceBindings(p *v1.PipelineSpec, pr *v1.PipelineRun) error {
 
 // ValidateTaskRunSpecs that the TaskRunSpecs defined by a PipelineRun are correct.
 func ValidateTaskRunSpecs(p *v1.PipelineSpec, pr *v1.PipelineRun) error {
-	pipelineTasks := make(map[string]string)
+	var pipelineTaskNames []string
 	for _, task := range p.Tasks {
-		pipelineTasks[task.Name] = task.Name
+		pipelineTaskNames = append(pipelineTaskNames, task.Name)
 	}
 
 	for _, task := range p.Finally {
-		pipelineTasks[task.Name] = task.Name
+		pipelineTaskNames = append(pipelineTaskNames, task.Name)
 	}
 
 	for _, taskrunSpec := range pr.Spec.TaskRunSpecs {
-		if _, ok := pipelineTasks[taskrunSpec.PipelineTaskName]; !ok {
+		// Check if the taskRunSpec pattern matches any pipeline task name
+		matched := false
+		for _, taskName := range pipelineTaskNames {
+			if pr.MatchesTaskRunSpec(taskrunSpec.PipelineTaskName, taskName) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return pipelineErrors.WrapUserError(fmt.Errorf("pipelineRun's taskrunSpecs defined wrong taskName: %q, does not exist in Pipeline", taskrunSpec.PipelineTaskName))
 		}
 	}

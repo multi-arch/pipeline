@@ -18,6 +18,7 @@ package v1_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -777,6 +778,232 @@ func TestPipelineRunMarkFailedCondition(t *testing.T) {
 
 			if d := cmp.Diff(tc.expectedConditions, updatedCondition, cmpopts.IgnoreFields(apis.Condition{}, "LastTransitionTime")); d != "" {
 				t.Error(diff.PrintWantGot(d))
+			}
+		})
+	}
+}
+
+func TestPipelineRun_GetTaskRunSpecWithWildcardAndParams(t *testing.T) {
+	tests := []struct {
+		name                 string
+		pr                   *v1.PipelineRun
+		pipelineTaskName     string
+		params               map[string]string
+		expectedNodeSelector map[string]string
+		expectedMatch        bool
+	}{
+		{
+			name: "exact match (backward compatibility)",
+			pr: &v1.PipelineRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "pr"},
+				Spec: v1.PipelineRunSpec{
+					TaskRunSpecs: []v1.PipelineTaskRunSpec{{
+						PipelineTaskName: "build-and-push-manifest",
+						PodTemplate: &pod.Template{
+							NodeSelector: map[string]string{
+								"kubernetes.io/arch": "amd64",
+							},
+						},
+					}},
+				},
+			},
+			pipelineTaskName: "build-and-push-manifest",
+			expectedNodeSelector: map[string]string{
+				"kubernetes.io/arch": "amd64",
+			},
+			expectedMatch: true,
+		},
+		{
+			name: "wildcard pattern match",
+			pr: &v1.PipelineRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "pr"},
+				Spec: v1.PipelineRunSpec{
+					TaskRunSpecs: []v1.PipelineTaskRunSpec{{
+						PipelineTaskName: "build-and-push-*",
+						PodTemplate: &pod.Template{
+							NodeSelector: map[string]string{
+								"kubernetes.io/arch": "amd64",
+							},
+						},
+					}},
+				},
+			},
+			pipelineTaskName: "build-and-push-manifest",
+			expectedNodeSelector: map[string]string{
+				"kubernetes.io/arch": "amd64",
+			},
+			expectedMatch: true,
+		},
+		{
+			name: "wildcard pattern no match",
+			pr: &v1.PipelineRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "pr"},
+				Spec: v1.PipelineRunSpec{
+					TaskRunSpecs: []v1.PipelineTaskRunSpec{{
+						PipelineTaskName: "build-and-push-manifest-*",
+						PodTemplate: &pod.Template{
+							NodeSelector: map[string]string{
+								"kubernetes.io/arch": "amd64",
+							},
+						},
+					}},
+				},
+			},
+			pipelineTaskName:     "different-task",
+			expectedNodeSelector: nil,
+			expectedMatch:        false,
+		},
+		{
+			name: "parameter substitution in nodeSelector",
+			pr: &v1.PipelineRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "pr"},
+				Spec: v1.PipelineRunSpec{
+					TaskRunSpecs: []v1.PipelineTaskRunSpec{{
+						PipelineTaskName: "build-and-push-manifest",
+						PodTemplate: &pod.Template{
+							NodeSelector: map[string]string{
+								"kubernetes.io/arch": "$(params.arch)",
+							},
+						},
+					}},
+				},
+			},
+			pipelineTaskName: "build-and-push-manifest",
+			params: map[string]string{
+				"arch": "arm64",
+			},
+			expectedNodeSelector: map[string]string{
+				"kubernetes.io/arch": "$(params.arch)", // Template value, substitution happens in reconciler
+			},
+			expectedMatch: true,
+		},
+		{
+			name: "wildcard with parameter substitution",
+			pr: &v1.PipelineRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "pr"},
+				Spec: v1.PipelineRunSpec{
+					TaskRunSpecs: []v1.PipelineTaskRunSpec{{
+						PipelineTaskName: "build-and-push-*",
+						PodTemplate: &pod.Template{
+							NodeSelector: map[string]string{
+								"kubernetes.io/arch": "$(params.arch)",
+								"disktype":           "$(params.disktype)",
+							},
+						},
+					}},
+				},
+			},
+			pipelineTaskName: "build-and-push-manifest",
+			params: map[string]string{
+				"arch":     "arm64",
+				"disktype": "ssd",
+			},
+			expectedNodeSelector: map[string]string{
+				"kubernetes.io/arch": "$(params.arch)", // Template values, substitution happens in reconciler
+				"disktype":           "$(params.disktype)",
+			},
+			expectedMatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test wildcard matching
+			matched := tt.pr.MatchesTaskRunSpec(tt.pr.Spec.TaskRunSpecs[0].PipelineTaskName, tt.pipelineTaskName)
+			if d := cmp.Diff(tt.expectedMatch, matched); d != "" {
+				t.Errorf("MatchesTaskRunSpec() mismatch %s", diff.PrintWantGot(d))
+			}
+
+			if !tt.expectedMatch {
+				return
+			}
+
+			// Test basic spec retrieval
+			spec := tt.pr.GetTaskRunSpec(tt.pipelineTaskName)
+
+			var actualNodeSelector map[string]string
+			if spec.PodTemplate != nil {
+				actualNodeSelector = spec.PodTemplate.NodeSelector
+			}
+
+			if d := cmp.Diff(tt.expectedNodeSelector, actualNodeSelector); d != "" {
+				t.Errorf("NodeSelector mismatch %s", diff.PrintWantGot(d))
+			}
+		})
+	}
+}
+
+func TestPipelineRun_MatchesTaskRunSpec(t *testing.T) {
+	pr := &v1.PipelineRun{}
+
+	tests := []struct {
+		pattern          string
+		pipelineTaskName string
+		expected         bool
+	}{
+		// Exact matches
+		{"task", "task", true},
+		{"build-and-push", "build-and-push", true},
+		{"task", "different", false},
+
+		// Wildcard matches
+		{"task-*", "task-1", true},
+		{"task-*", "task-foo", true},
+		{"task-*", "task-", true},
+		{"build-and-push-*", "build-and-push-manifest", true},
+		{"build-and-push-*", "build-and-push", false}, // doesn't match without suffix
+		{"*-task", "build-task", true},
+		{"*-task", "task", false}, // doesn't match without prefix
+		{"*task*", "mytaskname", true},
+		{"*task*", "my-task-name", true},
+		{"*task*", "notask", true}, // "notask" contains "task" as substring
+
+		// Complex wildcards
+		{"build-*-manifest", "build-and-push-manifest", true},
+		{"build-*-manifest", "build-manifest", false}, // missing middle part
+		{"*-build-and-push", "task-build-and-push", true},
+		{"*-build-and-push", "my-build-and-push", true},
+		{"*-build-and-push", "123-build-and-push", true},
+		{"*-build-and-push", "build-and-push", false},           // doesn't match without prefix
+		{"*-build-and-push", "build-and-push-something", false}, // extra suffix
+		{"*-build-and-push", "build-and-deploy", false},         // different ending
+		{"build-*-and-push", "build-image-and-push", true},
+		{"build-*-and-push", "build-test-and-push", true},
+		{"build-*-and-push", "build-123-and-push", true},
+		{"build-*-and-push", "build-and-push", false},         // doesn't match without middle part
+		{"build-*-and-push", "deploy-image-and-push", false},  // different prefix
+		{"build-*-and-push", "build-image-and-deploy", false}, // different suffix
+		{"*", "anything", true},
+		{"*", "", true},
+
+		// Edge cases
+		{"task.", "task.", true}, // literal dot
+		{"task+", "task+", true}, // literal plus
+		{"task?", "task?", true}, // literal question mark
+
+		// Additional edge cases that could be encountered
+		{"task_*", "task_1", true},                  // underscore in names
+		{"task_*", "task_build", true},              // underscore in names
+		{"*task*", "my-task-2", true},               // numbers in names
+		{"build-*-*", "build-image-manifest", true}, // multiple wildcards
+		{"build-*-*", "build-image", false},         // multiple wildcards missing part
+		{"*-*-*", "a-b-c", true},                    // multiple wildcards
+		{"*-*-*", "a-b", false},                     // multiple wildcards missing part
+		{"Task-*", "task-1", false},                 // case sensitivity (should not match)
+		{"task-*", "Task-1", false},                 // case sensitivity (should not match)
+		{"[abc]", "[abc]", true},                    // brackets treated literally
+		{"[abc]", "a", false},                       // brackets don't work as character class
+		{"my-very-long-task-name-*", "my-very-long-task-name-with-suffix", true}, // long names
+		{"", "task", false}, // empty pattern
+		{"task", "", false}, // empty task name
+		{"", "", true},      // both empty
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s matches %s", tt.pattern, tt.pipelineTaskName), func(t *testing.T) {
+			result := pr.MatchesTaskRunSpec(tt.pattern, tt.pipelineTaskName)
+			if d := cmp.Diff(tt.expected, result); d != "" {
+				t.Errorf("MatchesTaskRunSpec(%q, %q) mismatch %s", tt.pattern, tt.pipelineTaskName, diff.PrintWantGot(d))
 			}
 		})
 	}

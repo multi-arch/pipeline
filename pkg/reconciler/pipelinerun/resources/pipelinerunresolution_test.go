@@ -2772,6 +2772,79 @@ func TestValidateTaskRunSpecs(t *testing.T) {
 			},
 		},
 		wantErr: true,
+	}, {
+		name: "valid wildcard task mapping",
+		p: &v1.Pipeline{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pipelines",
+			},
+			Spec: v1.PipelineSpec{
+				Tasks: []v1.PipelineTask{{
+					Name: "build-and-push-manifest",
+					TaskRef: &v1.TaskRef{
+						Name: "task",
+					},
+				}, {
+					Name: "create-manifest-list",
+					TaskRef: &v1.TaskRef{
+						Name: "task",
+					},
+				}},
+			},
+		},
+		pr: &v1.PipelineRun{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pipelinerun",
+			},
+			Spec: v1.PipelineRunSpec{
+				PipelineRef: &v1.PipelineRef{
+					Name: "pipeline",
+				},
+				TaskRunSpecs: []v1.PipelineTaskRunSpec{{
+					PipelineTaskName:   "build-and-push-manifest",
+					ServiceAccountName: "default",
+				}, {
+					PipelineTaskName:   "create-manifest-*",
+					ServiceAccountName: "default",
+				}},
+			},
+		},
+		wantErr: false,
+	}, {
+		name: "invalid wildcard task mapping",
+		p: &v1.Pipeline{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pipelines",
+			},
+			Spec: v1.PipelineSpec{
+				Tasks: []v1.PipelineTask{{
+					Name: "build-and-push-manifest",
+					TaskRef: &v1.TaskRef{
+						Name: "task",
+					},
+				}, {
+					Name: "create-manifest-list",
+					TaskRef: &v1.TaskRef{
+						Name: "task",
+					},
+				}},
+			},
+		},
+		pr: &v1.PipelineRun{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pipelinerun",
+			},
+			Spec: v1.PipelineRunSpec{
+				PipelineRef: &v1.PipelineRef{
+					Name: "pipeline",
+				},
+				TaskRunSpecs: []v1.PipelineTaskRunSpec{{
+					PipelineTaskName:   "nonexistent-*",
+					ServiceAccountName: "default",
+				}},
+			},
+		},
+		wantErr: true,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := tc.p.Spec
